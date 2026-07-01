@@ -1,0 +1,143 @@
+version: "3.8"
+
+# ============================================================
+#  BCE / KBO  —  Medallion Architecture
+#  Hadoop HDFS  +  Apache Spark  +  MongoDB
+# ============================================================
+
+services:
+
+  # ── HDFS NameNode ─────────────────────────────────────────
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: bce_namenode
+    restart: unless-stopped
+    ports:
+      - "9870:9870"   # HDFS Web UI
+      - "9000:9000"   # HDFS RPC
+    volumes:
+      - hadoop_namenode:/hadoop/dfs/name
+      - ./scripts/init_hdfs.sh:/init_hdfs.sh
+    environment:
+      - CLUSTER_NAME=bce-kbo-cluster
+    env_file:
+      - ./config/hadoop.env
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9870"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ── HDFS DataNode ─────────────────────────────────────────
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: bce_datanode
+    restart: unless-stopped
+    depends_on:
+      namenode:
+        condition: service_healthy
+    volumes:
+      - hadoop_datanode:/hadoop/dfs/data
+    env_file:
+      - ./config/hadoop.env
+
+  # ── Spark Master ──────────────────────────────────────────
+  spark-master:
+    image: bde2020/spark-master:3.3.0-hadoop3.3
+    container_name: bce_spark_master
+    restart: unless-stopped
+    depends_on:
+      namenode:
+        condition: service_healthy
+      datanode:
+        condition: service_started
+    ports:
+      - "8080:8080"   # Spark Web UI
+      - "7077:7077"   # Spark master RPC
+    volumes:
+      - .:/app
+      - ./data:/data:ro
+    environment:
+      - INIT_DAEMON_STEP=setup_spark
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+
+  # ── Spark Worker ──────────────────────────────────────────
+  spark-worker:
+    image: bde2020/spark-worker:3.3.0-hadoop3.3
+    container_name: bce_spark_worker
+    restart: unless-stopped
+    depends_on:
+      - spark-master
+    volumes:
+      - .:/app
+      - ./data:/data:ro
+    environment:
+      - SPARK_MASTER=spark://spark-master:7077
+      - SPARK_WORKER_CORES=2
+      - SPARK_WORKER_MEMORY=4g
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+
+  # ── MongoDB (Gold layer store) ────────────────────────────
+  mongodb:
+    image: mongo:7.0
+    container_name: bce_mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: bce_password
+      MONGO_INITDB_DATABASE: bce_gold
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ── Mongo Express (UI MongoDB) ────────────────────────────
+  mongo-express:
+    image: mongo-express:1.0.2
+    container_name: bce_mongo_express
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    ports:
+      - "8082:8081"   # Mongo Express UI
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: admin
+      ME_CONFIG_MONGODB_ADMINPASSWORD: bce_password
+      ME_CONFIG_MONGODB_URL: mongodb://admin:bce_password@mongodb:27017/
+      ME_CONFIG_BASICAUTH: "false"
+
+  # ── Jupyter + PySpark (exploration interactive) ──────────
+  jupyter:
+    image: jupyter/pyspark-notebook:spark-3.3.0
+    container_name: bce_jupyter
+    restart: unless-stopped
+    depends_on:
+      - spark-master
+      - mongodb
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./notebooks:/home/jovyan/work
+      - ./data:/home/jovyan/data:ro
+    environment:
+      - SPARK_MASTER=spark://spark-master:7077
+      - JUPYTER_ENABLE_LAB=yes
+      - JUPYTER_TOKEN=bce2026
+      - PYSPARK_SUBMIT_ARGS=--master spark://spark-master:7077 --conf spark.hadoop.fs.defaultFS=hdfs://namenode:9000 pyspark-shell
+    command: start-notebook.sh --NotebookApp.token='bce2026'
+
+volumes:
+  hadoop_namenode:
+  hadoop_datanode:
+  mongodb_data:
+
+networks:
+  default:
+    name: bce_network
