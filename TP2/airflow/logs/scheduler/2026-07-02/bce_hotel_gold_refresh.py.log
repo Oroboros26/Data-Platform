@@ -212,3 +212,10 @@
 [2026-07-02T16:46:45.938+0000] {logging_mixin.py:188} INFO - [2026-07-02T16:46:45.938+0000] {dag.py:3089} INFO - Sync 1 DAGs
 [2026-07-02T16:46:45.955+0000] {logging_mixin.py:188} INFO - [2026-07-02T16:46:45.955+0000] {dag.py:3947} INFO - Setting next_dagrun for bce_hotel_gold_annual_refresh to 2025-01-01 06:00:00+00:00, run_after=2026-01-01 06:00:00+00:00
 [2026-07-02T16:46:45.974+0000] {processor.py:183} INFO - Processing /workspaces/Data-Platform/TP2/airflow/dags/bce_hotel_gold_refresh.py took 0.095 seconds
+[2026-07-02T16:47:17.149+0000] {processor.py:161} INFO - Started process (PID=151493) to work on /workspaces/Data-Platform/TP2/airflow/dags/bce_hotel_gold_refresh.py
+[2026-07-02T16:47:17.150+0000] {processor.py:830} INFO - Processing file /workspaces/Data-Platform/TP2/airflow/dags/bce_hotel_gold_refresh.py for tasks to queue
+[2026-07-02T16:47:17.152+0000] {logging_mixin.py:188} INFO - [2026-07-02T16:47:17.152+0000] {dagbag.py:545} INFO - Filling up the DagBag from /workspaces/Data-Platform/TP2/airflow/dags/bce_hotel_gold_refresh.py
+[2026-07-02T16:47:17.163+0000] {processor.py:840} INFO - DAG(s) 'bce_hotel_gold_annual_refresh' retrieved from /workspaces/Data-Platform/TP2/airflow/dags/bce_hotel_gold_refresh.py
+[2026-07-02T16:47:17.181+0000] {logging_mixin.py:188} INFO - [2026-07-02T16:47:17.180+0000] {dag.py:3089} INFO - Sync 1 DAGs
+[2026-07-02T16:47:17.204+0000] {logging_mixin.py:188} INFO - [2026-07-02T16:47:17.204+0000] {dag.py:3947} INFO - Setting next_dagrun for bce_hotel_gold_annual_refresh to 2025-01-01 06:00:00+00:00, run_after=2026-01-01 06:00:00+00:00
+[2026-07-02T16:47:17.235+0000] {processor.py:183} INFO - Processing /workspaces/Data-Platform/TP2/airflow/dags/bce_hotel_gold_refresh.py took 0.093 seconds

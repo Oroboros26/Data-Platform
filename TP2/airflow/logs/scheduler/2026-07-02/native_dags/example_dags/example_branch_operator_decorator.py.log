@@ -135,3 +135,10 @@
 [2026-07-02T16:46:14.233+0000] {logging_mixin.py:188} INFO - [2026-07-02T16:46:14.233+0000] {dag.py:3089} INFO - Sync 1 DAGs
 [2026-07-02T16:46:14.249+0000] {logging_mixin.py:188} INFO - [2026-07-02T16:46:14.248+0000] {dag.py:3947} INFO - Setting next_dagrun for example_branch_python_operator_decorator to 2026-07-01 00:00:00+00:00, run_after=2026-07-02 00:00:00+00:00
 [2026-07-02T16:46:14.266+0000] {processor.py:183} INFO - Processing /usr/local/python/3.12.1/lib/python3.12/site-packages/airflow/example_dags/example_branch_operator_decorator.py took 0.078 seconds
+[2026-07-02T16:47:15.146+0000] {processor.py:161} INFO - Started process (PID=151448) to work on /usr/local/python/3.12.1/lib/python3.12/site-packages/airflow/example_dags/example_branch_operator_decorator.py
+[2026-07-02T16:47:15.147+0000] {processor.py:830} INFO - Processing file /usr/local/python/3.12.1/lib/python3.12/site-packages/airflow/example_dags/example_branch_operator_decorator.py for tasks to queue
+[2026-07-02T16:47:15.149+0000] {logging_mixin.py:188} INFO - [2026-07-02T16:47:15.149+0000] {dagbag.py:545} INFO - Filling up the DagBag from /usr/local/python/3.12.1/lib/python3.12/site-packages/airflow/example_dags/example_branch_operator_decorator.py
+[2026-07-02T16:47:15.166+0000] {processor.py:840} INFO - DAG(s) 'example_branch_python_operator_decorator' retrieved from /usr/local/python/3.12.1/lib/python3.12/site-packages/airflow/example_dags/example_branch_operator_decorator.py
+[2026-07-02T16:47:15.189+0000] {logging_mixin.py:188} INFO - [2026-07-02T16:47:15.189+0000] {dag.py:3089} INFO - Sync 1 DAGs
+[2026-07-02T16:47:15.207+0000] {logging_mixin.py:188} INFO - [2026-07-02T16:47:15.207+0000] {dag.py:3947} INFO - Setting next_dagrun for example_branch_python_operator_decorator to 2026-07-01 00:00:00+00:00, run_after=2026-07-02 00:00:00+00:00
+[2026-07-02T16:47:15.224+0000] {processor.py:183} INFO - Processing /usr/local/python/3.12.1/lib/python3.12/site-packages/airflow/example_dags/example_branch_operator_decorator.py took 0.082 seconds
