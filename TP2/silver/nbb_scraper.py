@@ -9,11 +9,12 @@ enterprise_silver → StateDB → dépôts financiers NBB 2021-2025
   4. Stockage CSV local + upload WebHDFS
 
 Usage :
-  python3 silver/nbb_scraper.py [--load-only] [--scrape-only] [--limit N]
+  python3 silver/nbb_scraper.py [--load-only] [--scrape-only] [--limit N] [--workers N]
 
   --load-only   : uniquement étape 1+2 (chargement StateDB)
   --scrape-only : uniquement étape 3+4 (scraping, StateDB déjà prêt)
   --limit N     : limiter à N entreprises pour test
+  --workers N   : nombre de threads parallèles (défaut: 5)
 """
 
 import os
@@ -21,6 +22,8 @@ import sys
 import time
 import argparse
 import requests
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from datetime import datetime
 
@@ -42,13 +45,17 @@ COLL_SILVER    = "enterprise_silver"
 COLL_STATE     = "state_nbb_scraping"
 
 MIN_YEAR       = 2021
-REQUEST_DELAY  = 0.5   # secondes entre requêtes NBB
+REQUEST_DELAY  = 0.15  # secondes entre requêtes NBB
 MAX_RETRIES    = 3
 
-# Codes NACE hôtellerie retenus (voir day2.md)
+# Codes NACE hébergement — liste complète (toutes versions NACE)
 NACE_HOTELLERIE = {
-    "55100", "55201", "55202", "55203", "55204", "55209",
-    "55300", "55400", "55900",
+    "55100", "55101", "55102",                           # hôtels
+    "55201", "55202", "55203", "55204", "55209", "55210", # hébergement courte durée
+    "55220", "55231", "55232", "55233",                  # camping / vacances
+    "55300",                                             # terrains camping
+    "55400",                                             # intermédiation hébergement
+    "55900",                                             # autres hébergements
 }
 
 # Formes juridiques exclues (entités publiques)
@@ -68,11 +75,9 @@ def extract_hotel_enterprises(silver_coll):
 
     query = {
         "Status": "AC",
-        "TypeOfEnterprise": "2",
         "activities": {
             "$elemMatch": {
-                "NaceCode":       {"$in": list(NACE_HOTELLERIE)},
-                "Classification": "MAIN",
+                "NaceCode": {"$in": list(NACE_HOTELLERIE)},
             }
         },
         "JuridicalForm": {"$nin": list(EXCLUDED_JF)},
@@ -147,6 +152,36 @@ def hdfs_upload(local_path: Path, hdfs_path: str, webapi: str = HDFS_WEBAPI):
     return False
 
 
+# ── Pool de sessions réutilisables ────────────────────────────────────────────
+class SessionPool:
+    """Pool thread-safe de sessions HTTP NBB réutilisables."""
+    def __init__(self, size: int):
+        self._pool = []
+        self._lock = threading.Lock()
+        # Pré-créer les sessions en batches avec stagger pour éviter le thundering herd
+        for i in range(size):
+            try:
+                s = make_session("0878065378")  # Google Belgium — juste pour les cookies
+                self._pool.append(s)
+            except Exception:
+                self._pool.append(requests.Session())
+            if (i + 1) % 5 == 0:
+                time.sleep(0.3)  # stagger par batch de 5
+
+    def get(self):
+        with self._lock:
+            if self._pool:
+                return self._pool.pop()
+        return make_session("0878065378")
+
+    def put(self, session):
+        with self._lock:
+            self._pool.append(session)
+
+
+_session_pool: SessionPool | None = None
+
+
 # ── Étape 3 : scraping NBB CBSO ──────────────────────────────────────────────
 def scrape_enterprise(enterprise_number: str, out_dir: Path, hdfs_base: str):
     """
@@ -154,12 +189,34 @@ def scrape_enterprise(enterprise_number: str, out_dir: Path, hdfs_base: str):
     Retourne (n_filings_saved, error_or_None).
     """
     saved = 0
-    session = None
+    session = _session_pool.get() if _session_pool else None
 
     try:
-        session = make_session(enterprise_number)
-        deposits = get_deposits(session, enterprise_number)
+        if session is None:
+            session = make_session(enterprise_number)
+        else:
+            page_url = f"https://consult.cbso.nbb.be/consult-enterprise/{enterprise_number}"
+            session.headers.update({"Referer": page_url})
+
+        # Retry get_deposits on 429 with exponential backoff
+        deposits = None
+        for attempt in range(6):
+            try:
+                deposits = get_deposits(session, enterprise_number)
+                break
+            except requests.HTTPError as e:
+                if e.response is not None and e.response.status_code == 429:
+                    wait = 5 * (2 ** attempt)  # 5, 10, 20, 40, 80, 160s
+                    time.sleep(wait)
+                elif attempt == 5:
+                    raise
+                else:
+                    time.sleep(2)
+        if deposits is None:
+            raise Exception("max retries exceeded on get_deposits")
     except Exception as e:
+        if _session_pool and session:
+            _session_pool.put(session)
         return 0, f"session/deposits: {e}"
 
     for dep in deposits:
@@ -215,6 +272,8 @@ def scrape_enterprise(enterprise_number: str, out_dir: Path, hdfs_base: str):
 
         time.sleep(REQUEST_DELAY)
 
+    if _session_pool and session:
+        _session_pool.put(session)
     return saved, None
 
 
@@ -224,6 +283,7 @@ def main():
     parser.add_argument("--load-only",   action="store_true", help="Charge StateDB uniquement")
     parser.add_argument("--scrape-only", action="store_true", help="Scraping uniquement (StateDB déjà prêt)")
     parser.add_argument("--limit",       type=int, default=0, help="Limiter à N entreprises (0=toutes)")
+    parser.add_argument("--workers",     type=int, default=5, help="Nombre de threads parallèles (défaut: 5)")
     args = parser.parse_args()
 
     t0 = time.time()
@@ -265,29 +325,40 @@ def main():
             client.close()
             return
 
-    # ── Étape 3 : scraping ────────────────────────────────────────
-    pending_query  = {"status": {"$in": ["pending", "failed"]}}
-    pending_count  = state_coll.count_documents(pending_query)
-    print(f"\n[Scraping] {pending_count:,} entreprises à traiter...")
+    # ── Étape 3 : scraping parallèle ─────────────────────────────
+    pending_query = {"status": {"$in": ["pending", "failed"]}}
+    pending_count = state_coll.count_documents(pending_query)
+    print(f"\n[Scraping] {pending_count:,} entreprises à traiter ({args.workers} workers)...")
 
     if pending_count == 0:
         print("  Rien à scraper — toutes les entreprises sont 'done'.")
         client.close()
         return
 
-    done_count  = 0
-    error_count = 0
+    # Initialiser le pool de sessions (une par worker)
+    global _session_pool
+    print(f"  Initialisation du pool de {args.workers} sessions HTTP...")
+    _session_pool = SessionPool(args.workers)
+    print("  Pool prêt.")
 
-    for rec in state_coll.find(pending_query, batch_size=100):
+    # Charger tous les records pending en mémoire pour éviter les curseurs expirés
+    records = list(state_coll.find(pending_query, {"_id": 1, "enterprise_number": 1, "name": 1}))
+
+    counters    = {"done": 0, "error": 0}
+    stop_event  = threading.Event()
+    print_lock  = threading.Lock()
+    counter_lock = threading.Lock()
+
+    def process(rec):
+        if stop_event.is_set():
+            return
         eid  = rec["enterprise_number"]
         name = rec.get("name", "")
 
-        # Marquer in_progress
         state_coll.update_one(
             {"_id": eid},
             {"$set": {"status": "in_progress", "updated_at": datetime.utcnow()}}
         )
-
         try:
             n_saved, err = scrape_enterprise(eid, out_dir, hdfs_base)
             if err:
@@ -295,8 +366,10 @@ def main():
                     {"_id": eid},
                     {"$set": {"status": "failed", "error": err, "updated_at": datetime.utcnow()}}
                 )
-                error_count += 1
-                print(f"  ❌  {eid}  {name[:40]}  →  {err}")
+                with counter_lock:
+                    counters["error"] += 1
+                with print_lock:
+                    print(f"  ❌  {eid}  {name[:40]}  →  {err}")
             else:
                 state_coll.update_one(
                     {"_id": eid},
@@ -307,32 +380,47 @@ def main():
                         "updated_at":    datetime.utcnow(),
                     }}
                 )
-                done_count += 1
+                with counter_lock:
+                    counters["done"] += 1
                 elapsed = time.time() - t0
-                print(f"  ✅  {eid}  {name[:35]:<35}  {n_saved} dépôts  [{elapsed:.0f}s]")
-
-        except KeyboardInterrupt:
-            print("\n⚠️  Interruption clavier — reprise possible via --scrape-only")
-            # Remettre en_progress → failed pour permettre la reprise
-            state_coll.update_one(
-                {"_id": eid},
-                {"$set": {"status": "failed", "error": "interrupted", "updated_at": datetime.utcnow()}}
-            )
-            break
+                total_done = state_coll.count_documents({"status": "done"})
+                with print_lock:
+                    print(f"  ✅  {eid}  {name[:35]:<35}  {n_saved} dépôts  [{elapsed:.0f}s]  ({total_done}/{len(records)})")
         except Exception as e:
             state_coll.update_one(
                 {"_id": eid},
                 {"$set": {"status": "failed", "error": str(e)[:200], "updated_at": datetime.utcnow()}}
             )
-            error_count += 1
-            print(f"  ❌  {eid}  {name[:40]}  →  {e}")
+            with counter_lock:
+                counters["error"] += 1
+            with print_lock:
+                print(f"  ❌  {eid}  {name[:40]}  →  {e}")
+
+    try:
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            futures = {executor.submit(process, rec): rec for rec in records}
+            for future in as_completed(futures):
+                if stop_event.is_set():
+                    break
+                try:
+                    future.result()
+                except Exception:
+                    pass
+    except KeyboardInterrupt:
+        print("\n⚠️  Interruption — les workers terminent leur tâche en cours...")
+        stop_event.set()
+        # Remettre les in_progress → failed pour reprise propre
+        state_coll.update_many(
+            {"status": "in_progress"},
+            {"$set": {"status": "failed", "error": "interrupted", "updated_at": datetime.utcnow()}}
+        )
 
     elapsed = time.time() - t0
     final_done   = state_coll.count_documents({"status": "done"})
     final_failed = state_coll.count_documents({"status": "failed"})
 
     print(f"\n{'='*60}")
-    print(f"  Session  :  +{done_count} done  /  +{error_count} erreurs")
+    print(f"  Session  :  +{counters['done']} done  /  +{counters['error']} erreurs")
     print(f"  Total    :  done={final_done:,}  failed={final_failed:,}")
     print(f"  CSV      :  {LOCAL_OUT_DIR}")
     print(f"  Durée    :  {elapsed:.0f}s")

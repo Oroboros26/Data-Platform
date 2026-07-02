@@ -157,14 +157,14 @@ def get_all_kpis(enterprise_number: str) -> list[dict]:
     return results
 
 
-# --- Run ---
-enterprise_number = "0203430576"  # Apple Retail Belgium
-kpis = get_all_kpis(enterprise_number)
+if __name__ == "__main__":
+    enterprise_number = "0203430576"  # Apple Retail Belgium
+    kpis = get_all_kpis(enterprise_number)
 
-df = pd.DataFrame(kpis).set_index("year").sort_index(ascending=False)
-pd.set_option("display.float_format", "{:,.2f}".format)
-pd.set_option("display.max_columns", None)
-pd.set_option("display.width", 200)
+    df = pd.DataFrame(kpis).set_index("year").sort_index(ascending=False)
+    pd.set_option("display.float_format", "{:,.2f}".format)
+    pd.set_option("display.max_columns", None)
+    pd.set_option("display.width", 200)
 
-print("\n=== KPI Summary ===")
-print(df[["entity", "period_end", "chiffre_affaires", "ebitda", "resultat_net", "marge_nette", "autonomie_fin"]])
+    print("\n=== KPI Summary ===")
+    print(df[["entity", "period_end", "chiffre_affaires", "ebitda", "resultat_net", "marge_nette", "autonomie_fin"]])

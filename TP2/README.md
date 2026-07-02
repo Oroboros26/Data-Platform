@@ -1,68 +1,59 @@
-# Plateforme de Données BCE/KBO — Architecture Medallion
+# BCE/KBO — Secteur Hôtellerie Belgique
 
-## Vue d'ensemble
-
-Ce projet implémente une **architecture Medallion** (Bronze → Silver → Gold) sur les données ouvertes du **Registre Belge des Entreprises (BCE/KBO)**, snapshot du 27-06-2026.
-
-L'infrastructure repose sur :
-- **Apache Hadoop HDFS** — stockage distribué des couches Bronze et Silver (Parquet)
-- **Apache Spark (PySpark)** — transformation et jointure des données
-- **MongoDB** — stockage de la couche Gold (documents JSON, prête à requêter)
-- **Docker Compose** — orchestration complète de la stack
+Pipeline de données complet sur les **4 112 entreprises hôtelières belges** (codes NACE 55xxx, statut actif).  
+Architecture Medallion Bronze → Silver → Gold, exposée via une API FastAPI et un frontend React.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    DONNÉES SOURCE                                │
-│   enterprise  denomination  address  activity  contact          │
-│   establishment  branch  code  (9 CSV, ~7,5M lignes)           │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │ spark-submit ingest_bronze.py
+BCE Open Data (CSV)
+        │
+        ▼
+┌───────────────────────────────────────────────┐
+│  BRONZE  —  MongoDB bce_bronze                │
+│  enterprise_silver  ← silver_transform.py     │
+│  state_nbb_scraping ← StateDB scraping        │
+└──────────────────────────┬────────────────────┘
+                           │
                            ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  🟤  COUCHE BRONZE  (HDFS /datalake/bronze/*)                   │
-│  CSV bruts → Parquet  |  normalisation des clés BCE             │
-│  Tracabilité : _bronze_source + _bronze_loaded_at               │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │ spark-submit transform_silver.py
+┌───────────────────────────────────────────────┐
+│  SILVER  —  MongoDB bce_silver                │
+│  enterprise_silver : 4 112 hôtels enrichis    │
+│  (nom, adresse, NACE, forme juridique...)     │
+└──────────────────────────┬────────────────────┘
+                           │  nbb_scraper.py
+                           │  → consult.cbso.nbb.be
+                           │  → CSV PCMN par exercice
                            ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  ⚪  COUCHE SILVER  (HDFS /datalake/silver/*)                   │
-│  enterprise_profile     — 1 ligne par entreprise, enrichie      │
-│  establishment_profile  — 1 ligne par établissement             │
-│  all_activities         — toutes activités NACE                 │
-│  branch_profile         — unités légales branches               │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │ spark-submit load_gold.py
-                           ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  🟡  COUCHE GOLD  (HDFS /datalake/gold/ + MongoDB bce_gold)     │
-│  company_directory   — profil complet enrichi                   │
-│  activity_stats      — classement des secteurs NACE             │
-│  establishment_stats — multi-établissements                     │
-│  geo_stats           — densité géographique                     │
-└─────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────┐
+│  GOLD  —  MongoDB bce_gold                    │
+│  hotel_gold   : 1 doc/entreprise + KPIs       │
+│  dirigeants   : cache kbopub (SSE)            │
+└──────────────────────────┬────────────────────┘
+                           │
+              ┌────────────┴────────────┐
+              ▼                         ▼
+    FastAPI (port 8000)        Airflow DAG
+    React + Vite (port 5173)   recalcul annuel
 ```
 
 ---
 
-## Données source
+## Stack technique
 
-| Fichier             | Clé principale          | Contenu                                   | ~Lignes    |
-|---------------------|-------------------------|-------------------------------------------|------------|
-| `enterprise.csv`    | `EnterpriseNumber`      | Table centrale : statut, forme juridique  | 1 200 000  |
-| `denomination.csv`  | `EntityNumber`          | Noms FR/NL, officiels et commerciaux      | 2 800 000  |
-| `address.csv`       | `EntityNumber`          | Adresses siège (REGO) et correspondance   | 2 400 000  |
-| `activity.csv`      | `EntityNumber`          | Codes NACE 2003/2008/2025                 | 1 960 000  |
-| `contact.csv`       | `EntityNumber`          | TEL, EMAIL, WEB, FAX                      | 706 000    |
-| `establishment.csv` | `EstablishmentNumber`   | Unités d'exploitation + entreprise parente| 1 600 000  |
-| `branch.csv`        | `Id`                    | Unités légales type branche               | 350 000    |
-| `code.csv`          | `Category + Code`       | Référentiel de codes (toutes catégories)  | 21 000     |
+| Composant | Technologie | Rôle |
+|-----------|-------------|------|
+| Base de données | MongoDB 7.0 | Bronze + Silver + Gold |
+| Scraping NBB | Python + requests + BeautifulSoup | Dépôts financiers CBSO |
+| Gold layer | Python + pandas + ThreadPoolExecutor | Calcul KPIs et ratios |
+| API | FastAPI + uvicorn | REST + SSE dirigeants |
+| Frontend | React 18 + Vite + axios | UI recherche + fiches |
+| Orchestration | Apache Airflow 2.9 | DAG recalcul annuel |
+| Dashboard | Python http.server | Monitoring scraping |
 
-> Détail complet des jointures et des règles de déduplication : voir [JOINS.md](JOINS.md)
+> Spark non utilisé : OOM en environnement Codespaces. Remplacé par pandas + ThreadPoolExecutor (8 workers).
 
 ---
 
@@ -70,130 +61,245 @@ L'infrastructure repose sur :
 
 ```
 TP2/
-├── docker-compose.yml         ← Stack complète (Hadoop + Spark + MongoDB + Jupyter)
-├── config/
-│   └── hadoop.env             ← Variables d'environnement Hadoop/YARN
-├── bronze/
-│   └── ingest_bronze.py       ← CSV → HDFS Parquet (normalisation clés BCE)
 ├── silver/
-│   └── transform_silver.py    ← Jointures + déduplication + enrichissement codes
+│   ├── silver_transform.py     ← BCE CSV → MongoDB enterprise_silver
+│   ├── nbb_scraper.py          ← Scraping CBSO NBB → CSV PCMN locaux
+│   ├── consult.py              ← Client HTTP consult.cbso.nbb.be
+│   └── dashboard.py            ← Dashboard progression scraping (port 5050)
+│
 ├── gold/
-│   └── load_gold.py           ← Agrégations + chargement MongoDB
-├── scripts/
-│   ├── init_hdfs.sh           ← Création de la structure /datalake sur HDFS
-│   └── run_pipeline.sh        ← Exécution du pipeline complet
-├── notebooks/
-│   └── BCE_medallion.ipynb    ← Exploration interactive PySpark
-├── README.md                  ← Ce fichier
-├── JOINS.md                   ← Documentation détaillée des jointures
-└── SUIVI.md                   ← Journal de suivi du projet
+│   ├── hotel_gold.py           ← CSV PCMN → KPIs → bce_gold.hotel_gold
+│   └── day3.md                 ← Spécification jour 3
+│
+├── api/
+│   └── main.py                 ← FastAPI : search, fiche, financials, SSE
+│
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx             ← SearchView + EnterpriseView
+│   │   ├── api.js              ← Axios + EventSource wrappers
+│   │   └── components/
+│   │       ├── FinancialPanel.jsx   ← Onglets années + KPIs + ratios
+│   │       ├── SankeySvg.jsx        ← Sankey SVG CA→Marge→Résultat
+│   │       └── DirigeantsPanel.jsx  ← SSE kbopub
+│   └── vite.config.js          ← Proxy /api → localhost:8000
+│
+├── airflow/
+│   └── dags/
+│       └── bce_hotel_gold_refresh.py  ← DAG recalcul annuel incrémental
+│
+├── data/
+│   └── nbb_financials/         ← CSV PCMN téléchargés (un répertoire par BCE)
+│       └── {enterprise_number}/
+│           └── {year}/
+│               └── {reference}.csv
+│
+└── docker-compose.yml          ← Stack Hadoop + MongoDB (MongoDB seul utilisé)
 ```
 
 ---
 
-## Démarrage rapide
+## Services et ports
 
-### 1. Prérequis
+| Service | Port | URL Codespaces |
+|---------|------|----------------|
+| **Frontend React** | 5173 | `...-5173.app.github.dev` |
+| **FastAPI** | 8000 | `...-8000.app.github.dev` |
+| **Dashboard scraping** | 5050 | `...-5050.app.github.dev` |
+| **Airflow UI** | 8088 | `...-8088.app.github.dev` |
+| **MongoDB** | 27017 | localhost uniquement |
 
-- Docker Desktop ≥ 4.x avec Docker Compose v2
-- 8 Go de RAM alloués à Docker (recommandé : 12 Go)
-- Les CSV sont dans `../TP1/data/` (relatif à ce dossier)
+> Tous les ports doivent être en **Public** dans l'onglet Ports de Codespaces.
 
-### 2. Démarrer la stack
+---
+
+## Lancer les services
 
 ```bash
 cd /workspaces/Data-Platform/TP2
-docker compose up -d
-```
 
-Attendre ~60 secondes le démarrage complet. Vérifier l'état :
-```bash
-docker compose ps
-```
+# API FastAPI
+nohup uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload > /tmp/api.log 2>&1 &
 
-### 3. Exécuter le pipeline
+# Frontend React
+cd frontend && nohup npm run dev > /tmp/vite.log 2>&1 &
 
-```bash
-# Pipeline complet Bronze → Silver → Gold
-./scripts/run_pipeline.sh
+# Dashboard scraping
+nohup python3 silver/dashboard.py > /tmp/dashboard.log 2>&1 &
 
-# Ou étape par étape
-./scripts/run_pipeline.sh bronze
-./scripts/run_pipeline.sh silver
-./scripts/run_pipeline.sh gold
-```
-
-### 4. Interfaces d'accès
-
-| Service         | URL                           | Identifiants          |
-|-----------------|-------------------------------|------------------------|
-| Spark Web UI    | http://localhost:8080         | —                      |
-| HDFS NameNode   | http://localhost:9870         | —                      |
-| Mongo Express   | http://localhost:8082         | sans authentification  |
-| Jupyter Lab     | http://localhost:8888         | token : `bce2026`      |
-| MongoDB         | localhost:27017               | admin / bce_password   |
-
-### 5. Arrêter la stack
-
-```bash
-docker compose down          # arrêt sans supprimer les volumes
-docker compose down -v       # arrêt + suppression des données HDFS et MongoDB
+# Airflow
+export AIRFLOW_HOME=/workspaces/Data-Platform/TP2/airflow
+nohup airflow webserver --port 8088 > /tmp/airflow_web.log 2>&1 &
+nohup airflow scheduler > /tmp/airflow_sched.log 2>&1 &
 ```
 
 ---
 
-## Requêtes exemples
+## Pipeline de données
 
-### Spark / HDFS (depuis Jupyter ou spark-shell)
+### 1. Silver — Chargement BCE
 
-```python
-from pyspark.sql import SparkSession
-
-spark = SparkSession.builder \
-    .appName("BCE_Explore") \
-    .config("spark.hadoop.fs.defaultFS", "hdfs://namenode:9000") \
-    .getOrCreate()
-
-# Profil d'une entreprise
-ep = spark.read.parquet("hdfs://namenode:9000/datalake/silver/enterprise_profile")
-ep.filter(ep.EnterpriseNumber == "0878065378").show(1, truncate=False)
-
-# Top 10 secteurs NACE
-act = spark.read.parquet("hdfs://namenode:9000/datalake/gold/activity_stats")
-act.orderBy("NbEntreprises", ascending=False).show(10)
+```bash
+cd /workspaces/Data-Platform/TP2
+python3 silver/silver_transform.py
 ```
 
-### MongoDB (depuis mongosh ou Mongo Express)
+Lit les CSV BCE Open Data et construit `bce_silver.enterprise_silver` :  
+1 document par entreprise avec nom, adresse, NACE, forme juridique, statut.
 
-```javascript
+### 2. Scraping NBB CBSO
+
+```bash
+python3 silver/nbb_scraper.py --scrape-only --workers 8
+```
+
+Pour chaque entreprise hôtelière (status=pending dans StateDB) :
+- Interroge `consult.cbso.nbb.be` pour lister les dépôts financiers ≥ 2021
+- Télécharge chaque dépôt en CSV PCMN
+- Stocke dans `data/nbb_financials/{bce}/{année}/{référence}.csv`
+- Met à jour `bce_bronze.state_nbb_scraping`
+
+### 3. Gold — Calcul des KPIs
+
+```bash
+python3 gold/hotel_gold.py
+```
+
+Pour chaque répertoire d'entreprise dans `data/nbb_financials/` :
+- Parse les codes PCMN
+- Calcule les ratios financiers
+- Upsert dans `bce_gold.hotel_gold`
+
+Le script est **idempotent** (upsert) — peut être relancé après un scraping partiel.
+
+---
+
+## Codes PCMN → Champs Gold
+
+| Code PCMN | Champ | Description |
+|-----------|-------|-------------|
+| 70 | `ca` | Chiffre d'affaires (modèles full uniquement) |
+| 60 | `achats` | Achats de marchandises |
+| 71 | `var_stocks` | Variation de stocks |
+| 9901 | `ebit` | Résultat d'exploitation |
+| 9904 | `resultat_net` | Résultat de l'exercice |
+| 54/58 | `tresorerie` | Valeurs disponibles |
+| 17 + 43 | `dettes_financieres` | Dettes financières totales |
+| 10/15 | `fonds_propres` | Capitaux propres |
+| 100 | `capital_souscrit` | Capital souscrit |
+| 630 | `depreciation` | Amortissements |
+| 9906 | `chiffre_affaires_net` | CA net (modèles abrégés) |
+
+### Ratios calculés
+
+| Ratio | Formule |
+|-------|---------|
+| Marge nette % | Résultat net / CA × 100 |
+| Marge brute % | (CA − Achats + Var. stocks) / CA × 100 |
+| ROE % | Résultat net / Fonds propres × 100 |
+| EBITDA % | (EBIT + Amortissements) / CA × 100 |
+| Ratio de liquidité | Trésorerie / Dettes financières |
+| Taux d'endettement % | Dettes financières / Fonds propres × 100 |
+
+> Les ratios impliquant le CA retournent `null` pour les modèles abrégés (m87-f, m07-f) qui ne publient pas le code 70.
+
+---
+
+## Schéma MongoDB — bce_gold.hotel_gold
+
+```json
+{
+  "_id": "0402873860",
+  "enterprise_number": "0402873860",
+  "last_updated": "2026-07-02T16:17:46.257Z",
+  "years": [
+    {
+      "year": 2024,
+      "reference": "2025-00232173",
+      "schema_type": "m01-f",
+      "period_start": "2024-01-01",
+      "period_end": "2024-12-31",
+      "ca": null,
+      "ebit": -2600417.4,
+      "resultat_net": -2731522.96,
+      "tresorerie": 3097140.01,
+      "dettes_financieres": 11087065.19,
+      "fonds_propres": 3792890.12,
+      "ratios": {
+        "roe_pct": -72.02,
+        "liquidite": 0.279,
+        "taux_endettement_pct": 292.31
+      }
+    }
+  ]
+}
+```
+
+---
+
+## API FastAPI — Endpoints
+
+| Méthode | Endpoint | Description |
+|---------|----------|-------------|
+| GET | `/api/search?q=...` | Recherche par nom ou numéro BCE (max 20) |
+| GET | `/api/enterprise/{num}` | Fiche complète (silver + gold + scrape_status) |
+| GET | `/api/enterprise/{num}/financials` | KPIs Gold uniquement |
+| GET | `/api/enterprise/{num}/dirigeants` | SSE — kbopub, mis en cache après 1er scrape |
+| GET | `/api/stats` | Progression scraping + compteurs Gold |
+
+---
+
+## DAG Airflow — Recalcul annuel
+
+**Schedule** : `0 6 1 1 *` (1er janvier à 6h00)
+
+```
+list_done_enterprises
+        ↓
+check_new_deposits      ← compare StateDB vs NBB live
+        ↓
+download_new_deposits   ← scrape uniquement les exercices manquants
+        ↓
+recalculate_gold        ← upsert bce_gold.hotel_gold
+        ↓
+report
+```
+
+Logique incrémentale : seules les entreprises dont `filings_count` a augmenté depuis le dernier run sont retraitées.
+
+**Login Airflow UI** : `admin` / `admin`
+
+---
+
+## Accès MongoDB
+
+```bash
+mongosh "mongodb://admin:bce_password@localhost:27017/"
+
+# Entreprises avec données Gold
 use bce_gold
+db.hotel_gold.countDocuments()
 
-// Profil Google Belgium
-db.company_directory.findOne({ EnterpriseNumber: "0878065378" })
+# Recherche par nom
+use bce_silver
+db.enterprise_silver.findOne({ PrimaryName: /metropole/i })
 
-// Top 10 communes par nombre d'entreprises
-db.geo_stats.find().sort({ NbEntreprises: -1 }).limit(10).pretty()
-
-// Secteurs avec + de 10 000 entreprises
-db.activity_stats.find({ NbEntreprises: { $gt: 10000 } }).sort({ NbEntreprises: -1 })
+# Progression scraping
+use bce_bronze
+db.state_nbb_scraping.aggregate([
+  { $group: { _id: "$status", count: { $sum: 1 } } }
+])
 ```
 
 ---
 
-## Choix technologiques
+## État du projet (2026-07-02)
 
-| Technologie     | Rôle                          | Justification                                           |
-|-----------------|-------------------------------|---------------------------------------------------------|
-| HDFS            | Stockage distribué Bronze/Silver | Scalabilité horizontale, tolérance aux pannes, format natif Spark |
-| Parquet         | Format de fichier             | Compression columnar, pushdown predicates, lecture rapide |
-| Apache Spark    | Moteur de traitement          | Traitement en mémoire, API DataFrame, intégration HDFS native |
-| MongoDB         | Gold layer document store     | Flexibilité du schéma, indexation, requêtes riches, API REST facile |
-| Docker Compose  | Orchestration locale          | Reproductibilité totale, isolation des services          |
-
----
-
-## Sources de données
-
-- **BCE/KBO Open Data** : [economie.fgov.be](https://economie.fgov.be/fr/themes/entreprises/banque-carrefour-des/donnees-ouvertes-de-la-bce)
-- **Codes NACE** : [statbel.fgov.be](https://statbel.fgov.be/fr/themes/emploi-et-conditions-de-travail/structure-et-distribution-des-salaires/nace-bel)
-- **Documentation format BCE** : Fichier `meta.csv` inclus dans le dataset
+| Couche | État |
+|--------|------|
+| Silver | Complet — 4 112 entreprises |
+| Scraping NBB | ~52% — 2 141 / 4 112 done, 6 898 CSV |
+| Gold | 1 849 documents avec KPIs |
+| API | Opérationnel |
+| Frontend | Opérationnel |
+| Airflow DAG | Configuré, schedule annuel |

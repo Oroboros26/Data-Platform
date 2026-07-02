@@ -38,7 +38,7 @@ def load_codes(data_dir):
       status_lookup[Code]           = Description_FR  (Category='Status')
     """
     df = pd.read_csv(f"{data_dir}/code.csv", dtype=str, keep_default_na=False)
-    df_fr = df[df["Language"] == "1"]   # 1 = FR
+    df_fr = df[df["Language"] == "FR"]
 
     general = {}
     for _, row in df_fr.iterrows():
