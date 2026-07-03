@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+/workspaces/Data-Platform/.claude
+/workspaces/Data-Platform/.vscode
+/workspaces/Data-Platform/Data_Platform/data
+/workspaces/Data-Platform/TP1
