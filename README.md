@@ -9,6 +9,9 @@ Architecture Medallion Bronze → Silver → Gold, exposée via une API FastAPI 
 
 ## Architecture
 
+<img width="1443" height="1408" alt="diagram-export-7-3-2026-4_00_50-PM" src="https://github.com/user-attachments/assets/30ef1438-20b3-4a20-a85a-e2dc70b00bab" />
+
+
 ```
 BCE Open Data (CSV)
         │
